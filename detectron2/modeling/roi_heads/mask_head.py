@@ -178,7 +178,8 @@ class BaseMaskRCNNHead(nn.Module):
 
     @classmethod
     def from_config(cls, cfg, input_shape):
-        return {"vis_period": cfg.VIS_PERIOD}
+        return {"vis_period": cfg.VIS_PERIOD,
+                "loss_weight": cfg.MASK_LOSS_WEIGHT}
 
     def forward(self, x, instances: List[Instances]):
         """
