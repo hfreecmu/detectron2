@@ -8,6 +8,8 @@ from torch.nn import functional as F
 from detectron2.layers import cat, ciou_loss, diou_loss
 from detectron2.structures import Boxes
 
+import numpy as np
+
 # Value for clamping large dw and dh predictions. The heuristic is that we clamp
 # such that dw and dh are no larger than what would transform a 16px box into a
 # 1000px box (based on a small anchor, 16px, and a typical image size, 1000px).
@@ -367,3 +369,106 @@ def _dense_box_regression_loss(
     else:
         raise ValueError(f"Invalid dense box regression loss type '{box_reg_loss_type}'")
     return loss_box_reg
+
+@torch.jit.script
+class Line2LineTransform(object):
+    def __init__(
+        self, weights: Tuple[float, float], scale_clamp: float = _DEFAULT_SCALE_CLAMP
+    ):
+        self.weights = weights
+        self.scale_clamp = scale_clamp
+
+    def get_deltas(self, src_boxes, target_lines):
+        assert isinstance(src_boxes, torch.Tensor), type(src_boxes)
+        assert isinstance(target_lines, torch.Tensor), type(target_lines)
+
+        src_widths = src_boxes[:, 2] - src_boxes[:, 0]
+        src_heights = src_boxes[:, 3] - src_boxes[:, 1]
+        src_diag = torch.sqrt(src_widths**2 + src_heights**2)
+
+        target_widths = target_lines[:, 0]
+        target_angles = target_lines[:, 1]
+
+        wl, wa = self.weights
+        dl = wl * torch.log(target_widths / src_diag)
+        da = wa * target_angles / np.pi
+
+        deltas = torch.stack((dl, da), dim=1)
+        assert (src_diag > 0).all().item(), "Input boxes to Lin2LineTransform are not valid!"
+        return deltas
+
+    def apply_deltas(self, deltas, boxes):
+        deltas = deltas.float()  # ensure fp32 for decoding precision
+        boxes = boxes.to(deltas.dtype)
+
+        widths = boxes[:, 2] - boxes[:, 0]
+        heights = boxes[:, 3] - boxes[:, 1]
+        diags = torch.sqrt(widths**2 + heights**2)
+
+        wl, wa = self.weights
+        dl = deltas[:, 0::2] / wl
+        da = deltas[:, 1::2] / wa
+
+        # Prevent sending too large values into torch.exp()
+        dl = torch.clamp(dl, max=self.scale_clamp)
+        da = torch.clamp(da, max=self.scale_clamp)
+
+        pred_w = torch.exp(dl) * diags[:, None]
+        pred_a = np.pi * da
+
+        pred_lines = torch.stack((pred_w, pred_a), dim=-1)
+
+        return pred_lines.reshape(deltas.shape)
+
+#assuming only called on fg boxes 
+l1_loss = torch.nn.L1Loss()   
+def _dense_line_regression_loss(
+    anchors: List[Union[Boxes, torch.Tensor]],
+    line2line_transform: Line2LineTransform,
+    pred_anchor_deltas: List[torch.Tensor],
+    gt_lines: List[torch.Tensor],
+    box_reg_loss_type="smooth_l1",
+    smooth_l1_beta=0.0,
+):
+    if isinstance(anchors[0], Boxes):
+        anchors = type(anchors[0]).cat(anchors).tensor  # (R, 4)
+    else:
+        anchors = cat(anchors)
+
+    gt_anchor_deltas = [line2line_transform.get_deltas(anchors, k) for k in gt_lines]
+    gt_anchor_deltas = torch.stack(gt_anchor_deltas)
+
+    pred_anchor_deltas = cat(pred_anchor_deltas, dim=1)
+
+    gt_widths = gt_anchor_deltas[..., 0:1]
+    gt_angles = gt_anchor_deltas[..., 1:2]
+
+    pred_widths = pred_anchor_deltas[..., 0:1]
+    pred_angles = pred_anchor_deltas[..., 1:2]
+
+    loss_width_reg = smooth_l1_loss(
+            pred_widths,
+            gt_widths,
+            beta=smooth_l1_beta,
+            reduction="mean",
+        )
+    
+    rho = pred_angles - gt_angles
+    rho[rho >= 1.0] = rho[rho >= 1.0] - 2.0
+    rho[rho < -1.0] = rho[rho < -1.0] + 2.0 
+
+    loss_angle_reg = torch.abs(rho).mean()
+
+    #rho = np.pi * (pred_angles - gt_angles)
+    #rho_y = torch.sin(rho)
+    #rho_x = torch.cos(rho)
+
+    #loss_angle_reg = torch.where(rho_y >= 0, torch.atan2(rho_y, rho_x), torch.atan2(-rho_y, -rho_x)) / np.pi
+    #loss_angle_reg = loss_angle_reg.mean()
+
+    loss = loss_width_reg + loss_angle_reg
+
+    #loss = loss_angle_reg
+
+    return loss
+

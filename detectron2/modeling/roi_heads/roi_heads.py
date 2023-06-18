@@ -21,6 +21,7 @@ from .box_head import build_box_head
 from .fast_rcnn import FastRCNNOutputLayers
 from .keypoint_head import build_keypoint_head
 from .mask_head import build_mask_head
+from .line_head import build_line_head
 
 ROI_HEADS_REGISTRY = Registry("ROI_HEADS")
 ROI_HEADS_REGISTRY.__doc__ = """
@@ -553,6 +554,10 @@ class StandardROIHeads(ROIHeads):
         keypoint_in_features: Optional[List[str]] = None,
         keypoint_pooler: Optional[ROIPooler] = None,
         keypoint_head: Optional[nn.Module] = None,
+        keypoint_predictor: Optional[nn.Module] = None,
+        line_in_features: Optional[List[str]] = None,
+        line_pooler: Optional[ROIPooler] = None,
+        line_head: Optional[nn.Module] = None,
         train_on_pred_boxes: bool = False,
         **kwargs,
     ):
@@ -595,6 +600,12 @@ class StandardROIHeads(ROIHeads):
             self.keypoint_pooler = keypoint_pooler
             self.keypoint_head = keypoint_head
 
+        self.line_on = line_in_features is not None
+        if self.line_on:
+            self.line_in_features = line_in_features
+            self.line_pooler = line_pooler
+            self.line_head = line_head
+
         self.train_on_pred_boxes = train_on_pred_boxes
 
     @classmethod
@@ -612,6 +623,8 @@ class StandardROIHeads(ROIHeads):
             ret.update(cls._init_mask_head(cfg, input_shape))
         if inspect.ismethod(cls._init_keypoint_head):
             ret.update(cls._init_keypoint_head(cfg, input_shape))
+        if inspect.ismethod(cls._init_line_head):
+            ret.update(cls._init_line_head(cfg, input_shape))
         return ret
 
     @classmethod
@@ -718,6 +731,40 @@ class StandardROIHeads(ROIHeads):
             shape = {f: input_shape[f] for f in in_features}
         ret["keypoint_head"] = build_keypoint_head(cfg, shape)
         return ret
+    
+    @classmethod
+    def _init_line_head(cls, cfg, input_shape):
+        if not cfg.MODEL.LINE_ON:
+            return {}
+        # fmt: off
+        in_features       = cfg.MODEL.ROI_HEADS.IN_FEATURES
+        pooler_resolution = cfg.MODEL.ROI_LINE_HEAD.POOLER_RESOLUTION
+        pooler_scales     = tuple(1.0 / input_shape[k].stride for k in in_features)
+        sampling_ratio    = cfg.MODEL.ROI_LINE_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type       = cfg.MODEL.ROI_LINE_HEAD.POOLER_TYPE
+        # fmt: on
+
+        in_channels = [input_shape[f].channels for f in in_features][0]
+
+        ret = {"line_in_features": in_features}
+        ret["line_pooler"] = (
+            ROIPooler(
+                output_size=pooler_resolution,
+                scales=pooler_scales,
+                sampling_ratio=sampling_ratio,
+                pooler_type=pooler_type,
+            )
+            if pooler_type
+            else None
+        )
+        if pooler_type:
+            shape = ShapeSpec(
+                channels=in_channels, width=pooler_resolution, height=pooler_resolution
+            )
+        else:
+            shape = {f: input_shape[f] for f in in_features}
+        ret["line_head"] = build_line_head(cfg, shape)
+        return ret
 
     def forward(
         self,
@@ -731,7 +778,7 @@ class StandardROIHeads(ROIHeads):
         """
         del images
         if self.training:
-            assert targets, "'targets' argument is required during training"
+            assert targets, "'targets' argument is required during training" 
             proposals = self.label_and_sample_proposals(proposals, targets)
         del targets
 
@@ -742,6 +789,7 @@ class StandardROIHeads(ROIHeads):
             # predicted by the box head.
             losses.update(self._forward_mask(features, proposals))
             losses.update(self._forward_keypoint(features, proposals))
+            losses.update(self._forward_line(features, proposals))
             return proposals, losses
         else:
             pred_instances = self._forward_box(features, proposals)
@@ -771,10 +819,11 @@ class StandardROIHeads(ROIHeads):
                 fields such as `pred_masks` or `pred_keypoints`.
         """
         assert not self.training
-        assert instances[0].has("pred_boxes") and instances[0].has("pred_classes")
+        assert instances[0].has("pred_boxes") and instances[0].has("pred_classes") and instances[0].has("orig_proposals")
 
         instances = self._forward_mask(features, instances)
         instances = self._forward_keypoint(features, instances)
+        instances = self._forward_line(features, instances)
         return instances
 
     def _forward_box(self, features: Dict[str, torch.Tensor], proposals: List[Instances]):
@@ -875,3 +924,20 @@ class StandardROIHeads(ROIHeads):
         else:
             features = {f: features[f] for f in self.keypoint_in_features}
         return self.keypoint_head(features, instances)
+    
+    def _forward_line(self, features: Dict[str, torch.Tensor], instances: List[Instances]):
+        if not self.line_on:
+            return {} if self.training else instances
+        
+        if self.training:
+            # head is only trained on positive proposals.
+            instances, _ = select_foreground_proposals(instances, self.num_classes)
+
+        if self.line_pooler is not None:
+            features = [features[f] for f in self.line_in_features]
+            boxes = [x.proposal_boxes if self.training else x.pred_boxes for x in instances]
+            features = self.line_pooler(features, boxes)
+        else:
+            features = {f: features[f] for f in self.line_in_features}
+        return self.line_head(features, instances)
+

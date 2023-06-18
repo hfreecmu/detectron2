@@ -50,6 +50,7 @@ def fast_rcnn_inference(
     score_thresh: float,
     nms_thresh: float,
     topk_per_image: int,
+    proposals: List[Instances]=None,
 ):
     """
     Call `fast_rcnn_inference_single_image` for all images.
@@ -76,11 +77,15 @@ def fast_rcnn_inference(
         kept_indices: (list[Tensor]): A list of 1D tensor of length of N, each element indicates
             the corresponding boxes/scores index in [0, Ri) from the input, for image i.
     """
+    if proposals is None:
+        proposals = [None]*len(boxes)
+        
     result_per_image = [
         fast_rcnn_inference_single_image(
-            boxes_per_image, scores_per_image, image_shape, score_thresh, nms_thresh, topk_per_image
+            boxes_per_image, scores_per_image, image_shape, score_thresh, nms_thresh, topk_per_image,
+            proposal
         )
-        for scores_per_image, boxes_per_image, image_shape in zip(scores, boxes, image_shapes)
+        for scores_per_image, boxes_per_image, image_shape, proposal in zip(scores, boxes, image_shapes, proposals)
     ]
     return [x[0] for x in result_per_image], [x[1] for x in result_per_image]
 
@@ -122,6 +127,7 @@ def fast_rcnn_inference_single_image(
     score_thresh: float,
     nms_thresh: float,
     topk_per_image: int,
+    proposals: Instances=None
 ):
     """
     Single-image inference. Return bounding-box detection results by thresholding
@@ -138,6 +144,8 @@ def fast_rcnn_inference_single_image(
     if not valid_mask.all():
         boxes = boxes[valid_mask]
         scores = scores[valid_mask]
+        if proposals is not None:
+            proposals = proposals[valid_mask]
 
     scores = scores[:, :-1]
     num_bbox_reg_classes = boxes.shape[1] // 4
@@ -152,22 +160,33 @@ def fast_rcnn_inference_single_image(
     # R' x 2. First column contains indices of the R predictions;
     # Second column contains indices of classes.
     filter_inds = filter_mask.nonzero()
+
     if num_bbox_reg_classes == 1:
         boxes = boxes[filter_inds[:, 0], 0]
+        if proposals is not None:
+            proposals = proposals[filter_inds[:, 0]]
     else:
         boxes = boxes[filter_mask]
+        if proposals is not None:
+            proposals = proposals[filter_mask]
+    
     scores = scores[filter_mask]
 
     # 2. Apply NMS for each class independently.
     keep = batched_nms(boxes, scores, filter_inds[:, 1], nms_thresh)
     if topk_per_image >= 0:
         keep = keep[:topk_per_image]
-    boxes, scores, filter_inds = boxes[keep], scores[keep], filter_inds[keep]
+
+    if proposals is not None:
+        boxes, scores, filter_inds, proposals = boxes[keep], scores[keep], filter_inds[keep], proposals[keep]
+    else:
+        boxes, scores, filter_inds = boxes[keep], scores[keep], filter_inds[keep]
 
     result = Instances(image_shape)
     result.pred_boxes = Boxes(boxes)
     result.scores = scores
     result.pred_classes = filter_inds[:, 1]
+    result.orig_proposals = proposals.proposal_boxes
     return result, filter_inds[:, 0]
 
 
@@ -483,6 +502,7 @@ class FastRCNNOutputLayers(nn.Module):
             self.test_score_thresh,
             self.test_nms_thresh,
             self.test_topk_per_image,
+            proposals
         )
 
     def predict_boxes_for_gt_classes(self, predictions, proposals):

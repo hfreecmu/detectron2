@@ -18,6 +18,7 @@ from detectron2.structures import (
     BoxMode,
     Instances,
     Keypoints,
+    Lines,
     PolygonMasks,
     RotatedBoxes,
     polygons_to_bitmask,
@@ -450,6 +451,10 @@ def annotations_to_instances(annos, image_size, mask_format="polygon"):
     if len(annos) and "keypoints" in annos[0]:
         kpts = [obj.get("keypoints", []) for obj in annos]
         target.gt_keypoints = Keypoints(kpts)
+
+    if len(annos) and "line" in annos[0]:
+        lines = [obj.get("line", []) for obj in annos]
+        target.gt_lines = Lines(lines)
 
     return target
 
