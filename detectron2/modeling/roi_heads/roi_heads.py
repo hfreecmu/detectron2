@@ -554,7 +554,6 @@ class StandardROIHeads(ROIHeads):
         keypoint_in_features: Optional[List[str]] = None,
         keypoint_pooler: Optional[ROIPooler] = None,
         keypoint_head: Optional[nn.Module] = None,
-        keypoint_predictor: Optional[nn.Module] = None,
         line_in_features: Optional[List[str]] = None,
         line_pooler: Optional[ROIPooler] = None,
         line_head: Optional[nn.Module] = None,

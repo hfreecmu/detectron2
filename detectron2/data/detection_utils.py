@@ -655,6 +655,20 @@ def build_augmentation(cfg, is_train):
                 vertical=cfg.INPUT.RANDOM_FLIP == "vertical",
             )
         )
+
+        if cfg.INPUT.DOUBLE_FLIP:
+            augmentation.append(
+                T.RandomFlip(
+                    horizontal= not (cfg.INPUT.RANDOM_FLIP == "horizontal"),
+                    vertical= not (cfg.INPUT.RANDOM_FLIP == "vertical"),
+                )
+        )
+            
+    if cfg.INPUT.RANDOM_BRIGHTNESS.ENABLE:
+        low = cfg.INPUT.RANDOM_BRIGHTNESS.LOW
+        high = cfg.INPUT.RANDOM_BRIGHTNESS.HIGH
+        augmentation.append(T.RandomBrightness(low, high))
+
     return augmentation
 
 
