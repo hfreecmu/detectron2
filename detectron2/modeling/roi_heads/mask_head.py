@@ -181,7 +181,7 @@ class BaseMaskRCNNHead(nn.Module):
         return {"vis_period": cfg.VIS_PERIOD,
                 "loss_weight": cfg.MASK_LOSS_WEIGHT}
 
-    def forward(self, x, instances: List[Instances]):
+    def forward(self, x, instances: List[Instances], return_x=False):
         """
         Args:
             x: input region feature(s) provided by :class:`ROIHeads`.
@@ -196,6 +196,9 @@ class BaseMaskRCNNHead(nn.Module):
             A dict of losses in training. The predicted "instances" in inference.
         """
         x = self.layers(x)
+        if return_x:
+            return x
+
         if self.training:
             return {"loss_mask": mask_rcnn_loss(x, instances, self.vis_period) * self.loss_weight}
         else:
