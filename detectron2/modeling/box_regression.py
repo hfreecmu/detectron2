@@ -373,7 +373,7 @@ def _dense_box_regression_loss(
 @torch.jit.script
 class Line2LineTransform(object):
     def __init__(
-        self, weights: Tuple[float, float], scale_clamp: float = _DEFAULT_SCALE_CLAMP
+        self, weights: float, scale_clamp: float = _DEFAULT_SCALE_CLAMP
     ):
         self.weights = weights
         self.scale_clamp = scale_clamp
@@ -387,13 +387,11 @@ class Line2LineTransform(object):
         src_diag = torch.sqrt(src_widths**2 + src_heights**2)
 
         target_widths = target_lines[:, 0]
-        target_angles = target_lines[:, 1]
 
-        wl, wa = self.weights
+        wl = self.weights
         dl = wl * torch.log(target_widths / src_diag)
-        da = wa * target_angles / np.pi
 
-        deltas = torch.stack((dl, da), dim=1)
+        deltas = dl
         assert (src_diag > 0).all().item(), "Input boxes to Lin2LineTransform are not valid!"
         return deltas
 
@@ -405,18 +403,15 @@ class Line2LineTransform(object):
         heights = boxes[:, 3] - boxes[:, 1]
         diags = torch.sqrt(widths**2 + heights**2)
 
-        wl, wa = self.weights
-        dl = deltas[:, 0::2] / wl
-        da = deltas[:, 1::2] / wa
+        wl =self.weights
+        dl = deltas / wl
 
         # Prevent sending too large values into torch.exp()
         dl = torch.clamp(dl, max=self.scale_clamp)
-        da = torch.clamp(da, max=self.scale_clamp)
 
         pred_w = torch.exp(dl) * diags[:, None]
-        pred_a = np.pi * da
 
-        pred_lines = torch.stack((pred_w, pred_a), dim=-1)
+        pred_lines = pred_w
 
         return pred_lines.reshape(deltas.shape)
 
@@ -440,11 +435,9 @@ def _dense_line_regression_loss(
 
     pred_anchor_deltas = cat(pred_anchor_deltas, dim=1)
 
-    gt_widths = gt_anchor_deltas[..., 0:1]
-    gt_angles = gt_anchor_deltas[..., 1:2]
+    gt_widths = gt_anchor_deltas
 
-    pred_widths = pred_anchor_deltas[..., 0:1]
-    pred_angles = pred_anchor_deltas[..., 1:2]
+    pred_widths = pred_anchor_deltas
 
     loss_width_reg = smooth_l1_loss(
             pred_widths,
@@ -452,23 +445,8 @@ def _dense_line_regression_loss(
             beta=smooth_l1_beta,
             reduction="mean",
         )
-    
-    rho = pred_angles - gt_angles
-    rho[rho >= 1.0] = rho[rho >= 1.0] - 2.0
-    rho[rho < -1.0] = rho[rho < -1.0] + 2.0 
 
-    loss_angle_reg = torch.abs(rho).mean()
-
-    #rho = np.pi * (pred_angles - gt_angles)
-    #rho_y = torch.sin(rho)
-    #rho_x = torch.cos(rho)
-
-    #loss_angle_reg = torch.where(rho_y >= 0, torch.atan2(rho_y, rho_x), torch.atan2(-rho_y, -rho_x)) / np.pi
-    #loss_angle_reg = loss_angle_reg.mean()
-
-    loss = loss_width_reg + loss_angle_reg
-
-    #loss = loss_angle_reg
+    loss = loss_width_reg
 
     return loss
 

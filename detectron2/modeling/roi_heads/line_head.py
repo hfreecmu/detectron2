@@ -121,9 +121,8 @@ class LineRCNNConvUpsampleHead(BaseLinesRCNNHead, nn.Sequential):
             weight_init.c2_xavier_fill(layer)
 
         #add final layer
-        self.line_pred = nn.Linear(int(np.prod(self._output_size)), 2)
+        self.line_pred = nn.Linear(int(np.prod(self._output_size)), 1)
         self.add_module("line_pred", self.line_pred)
-        self.add_module("line_pred_tanh", nn.Tanh())
 
         nn.init.normal_(self.line_pred.weight, std=0.001)
         for l in [self.line_pred]:

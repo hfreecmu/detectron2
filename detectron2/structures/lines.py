@@ -26,7 +26,7 @@ class Lines:
             lines_per_instance: List[Union[torch.Tensor, np.ndarray]]
         ) -> List[np.ndarray]:
             # transform each line to a numpy array
-            if len(lines_per_instance) != 2:
+            if len(lines_per_instance) != 1:
                 raise ValueError(f"Cannot create a line from {len(lines_per_instance)} coordinates.")
             
             lines_per_instance = _make_array(lines_per_instance)
